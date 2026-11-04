@@ -14,6 +14,7 @@ jobs:
     env:
       KERNEL_BRANCH: android12-5.10-2025-05
       KERNEL_VERSION: 5.10.236
+      KERNEL_RELEASE: 5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284
       BUILD_TIMESTAMP: Tue Oct 21 03:03:12 UTC 2025
 
     steps:
@@ -87,6 +88,25 @@ jobs:
           echo "KBUILD_BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
 
+      - name: Set the requested kernel release name
+        working-directory: kernel/common
+        run: |
+          set -euo pipefail
+          file=scripts/setlocalversion
+          if [[ ! -f "$file" ]]; then
+            echo "::error::Missing $file"
+            exit 1
+          fi
+
+          sed -i 's/-dirty//g' "$file"
+          perl -0pi -e 's/echo "\$\{KERNELVERSION\}\$\{file_localversion\}\$\{config_localversion\}\$\{LOCALVERSION\}\$\{scm_version\}"/echo "5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284"/g; s/echo "\$res"/echo "5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284"/g' "$file"
+
+          if ! grep -Fq '5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284' "$file"; then
+            echo "::error::Could not set the requested kernel release in $file"
+            exit 1
+          fi
+          echo "Kernel release will be: $KERNEL_RELEASE"
+
       - name: Build Google GKI kernel
         working-directory: kernel
         run: |
@@ -101,14 +121,15 @@ jobs:
             echo "::error::Build did not produce $image"
             exit 1
           fi
+          strings "$image" | grep -F "Linux version $KERNEL_RELEASE"
           strings "$image" | grep -F '#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025'
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp "$image" "$GITHUB_WORKSPACE/artifacts/Image-5.10.236-gki"
+          cp "$image" "$GITHUB_WORKSPACE/artifacts/Image-$KERNEL_RELEASE"
 
       - name: Upload kernel Image
         uses: actions/upload-artifact@v6
         with:
           name: android12-5.10.236-google-gki
-          path: artifacts/Image-5.10.236-gki
+          path: artifacts/Image-5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284
           if-no-files-found: error
           compression-level: 0

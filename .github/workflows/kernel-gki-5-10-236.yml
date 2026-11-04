@@ -118,11 +118,27 @@ jobs:
           set -euo pipefail
           image="$GITHUB_WORKSPACE/kernel/out/android12-5.10/dist/Image"
           if [[ ! -s "$image" ]]; then
-            echo "::error::Build did not produce $image"
+            echo "::error::Build did not produce a non-empty Image at $image"
+            find "$GITHUB_WORKSPACE/kernel/out" -maxdepth 5 -type f \( -name Image -o -name kernel.release -o -name utsrelease.h \) -print 2>/dev/null || true
             exit 1
           fi
-          strings "$image" | grep -F "Linux version $KERNEL_RELEASE"
-          strings "$image" | grep -F '#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025'
+
+          image_strings="$(strings "$image")"
+          release_line="$(grep -F 'Linux version ' <<< "$image_strings" | head -n 1 || true)"
+          timestamp_line="$(grep -F '#1 SMP PREEMPT ' <<< "$image_strings" | head -n 1 || true)"
+          echo "Embedded release: ${release_line:-<not found>}"
+          echo "Embedded build timestamp: ${timestamp_line:-<not found>}"
+
+          if [[ "$release_line" != *"Linux version $KERNEL_RELEASE "* && "$release_line" != *"Linux version $KERNEL_RELEASE("* ]]; then
+            echo "::error::Expected release '$KERNEL_RELEASE'; inspect the embedded release shown above."
+            find "$GITHUB_WORKSPACE/kernel" -type f \( -path '*/include/config/kernel.release' -o -path '*/include/generated/utsrelease.h' \) -print -exec cat {} \; 2>/dev/null || true
+            exit 1
+          fi
+          if [[ "$timestamp_line" != *'#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025'* ]]; then
+            echo "::error::The embedded build timestamp does not match the requested value."
+            exit 1
+          fi
+
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           cp "$image" "$GITHUB_WORKSPACE/artifacts/Image-$KERNEL_RELEASE"
 

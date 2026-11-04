@@ -99,10 +99,10 @@ jobs:
           fi
 
           sed -i 's/-dirty//g' "$file"
-          perl -0pi -e 's/echo "\$\{KERNELVERSION\}\$\{file_localversion\}\$\{config_localversion\}\$\{LOCALVERSION\}\$\{scm_version\}"/echo "5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284"/g; s/echo "\$res"/echo "5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284"/g' "$file"
+          perl -0pi -e 's/echo "\$res"/echo "-android12-9-00003-gfb24cf99ad97-ab14313284"/g' "$file"
 
-          if ! grep -Fq '5.10.236-android12-9-00003-gfb24cf99ad97-ab14313284' "$file"; then
-            echo "::error::Could not set the requested kernel release in $file"
+          if ! grep -Fq 'echo "-android12-9-00003-gfb24cf99ad97-ab14313284"' "$file"; then
+            echo "::error::Could not set the requested local version suffix in $file"
             exit 1
           fi
           echo "Kernel release will be: $KERNEL_RELEASE"
@@ -117,20 +117,35 @@ jobs:
         run: |
           set -euo pipefail
           image="$GITHUB_WORKSPACE/kernel/out/android12-5.10/dist/Image"
+          release_file="$GITHUB_WORKSPACE/kernel/out/android12-5.10/common/include/config/kernel.release"
           if [[ ! -s "$image" ]]; then
             echo "::error::Build did not produce a non-empty Image at $image"
             find "$GITHUB_WORKSPACE/kernel/out" -maxdepth 5 -type f \( -name Image -o -name kernel.release -o -name utsrelease.h \) -print 2>/dev/null || true
             exit 1
           fi
+          if [[ ! -s "$release_file" ]]; then
+            echo "::error::Build did not produce $release_file"
+            find "$GITHUB_WORKSPACE/kernel/out" -type f -name kernel.release -print 2>/dev/null || true
+            exit 1
+          fi
+
+          actual_release="$(<"$release_file")"
+          echo "Generated kernel release: $actual_release"
+          if [[ "$actual_release" != "$KERNEL_RELEASE" ]]; then
+            echo "::error::Expected kernel.release '$KERNEL_RELEASE', got '$actual_release'"
+            exit 1
+          fi
 
           image_strings="$(strings "$image")"
-          release_line="$(grep -F 'Linux version ' <<< "$image_strings" | head -n 1 || true)"
-          timestamp_line="$(grep -F '#1 SMP PREEMPT ' <<< "$image_strings" | head -n 1 || true)"
-          echo "Embedded release: ${release_line:-<not found>}"
+          release_candidates="$(grep -F 'Linux version ' <<< "$image_strings" | head -n 5 || true)"
+          release_line="$(grep -F "Linux version $KERNEL_RELEASE " <<< "$image_strings" | head -n 1 || true)"
+          timestamp_line="$(grep -F '#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025' <<< "$image_strings" | head -n 1 || true)"
+          echo "Embedded release candidates: ${release_candidates:-<not found>}"
+          echo "Expected release match: ${release_line:-<not found>}"
           echo "Embedded build timestamp: ${timestamp_line:-<not found>}"
 
-          if [[ "$release_line" != *"Linux version $KERNEL_RELEASE "* && "$release_line" != *"Linux version $KERNEL_RELEASE("* ]]; then
-            echo "::error::Expected release '$KERNEL_RELEASE'; inspect the embedded release shown above."
+          if [[ -z "$release_line" ]]; then
+            echo "::error::Expected release '$KERNEL_RELEASE' was not found in Image."
             find "$GITHUB_WORKSPACE/kernel" -type f \( -path '*/include/config/kernel.release' -o -path '*/include/generated/utsrelease.h' \) -print -exec cat {} \; 2>/dev/null || true
             exit 1
           fi

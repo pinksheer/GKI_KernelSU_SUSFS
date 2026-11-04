@@ -1,0 +1,114 @@
+name: Google GKI 5.10.236 (patches only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android 12 Google GKI 5.10.236
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      KERNEL_BRANCH: android12-5.10-2025-05
+      KERNEL_VERSION: 5.10.236
+      BUILD_TIMESTAMP: Tue Oct 21 03:03:12 UTC 2025
+
+    steps:
+      - name: Checkout build scripts and patches
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential curl flex git libelf-dev libncurses-dev libssl-dev lz4 python3
+
+      - name: Install repo tool
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+            https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod 0755 "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Initialize and sync official Google GKI source
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/kernel"
+          cd "$GITHUB_WORKSPACE/kernel"
+          repo init --depth=1 \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b "common-${KERNEL_BRANCH}" \
+            --repo-rev=v2.16
+
+          manifest="$PWD/.repo/manifests/default.xml"
+          if grep -q 'path="common".*revision="' "$manifest"; then
+            sed -i '/path="common"/ s|revision="android12-5.10-2025-05"|revision="deprecated/android12-5.10-2025-05"|' "$manifest"
+          fi
+
+          repo sync -c -j4 --jobs-checkout=4 --no-tags --no-clone-bundle --retry-fetches=3
+          actual_version="$(awk -F ' = ' '/^VERSION = / {v=$2} /^PATCHLEVEL = / {p=$2} /^SUBLEVEL = / {s=$2} END {print v "." p "." s}' common/Makefile)"
+          if [[ "$actual_version" != "$KERNEL_VERSION" ]]; then
+            echo "::error::Expected $KERNEL_VERSION, got $actual_version"
+            exit 1
+          fi
+          echo "Verified official kernel source version: $actual_version"
+
+      - name: Apply the two requested patches
+        working-directory: kernel/common
+        run: |
+          set -euo pipefail
+          for patch_file in \
+            "$GITHUB_WORKSPACE/unicode_bypass_fix_6.1-.patch" \
+            "$GITHUB_WORKSPACE/gki_ptrace.patch"; do
+            echo "Checking $patch_file"
+            patch --dry-run --batch --forward --fuzz=0 -p1 < "$patch_file"
+            patch --batch --forward --fuzz=0 -p1 < "$patch_file"
+          done
+
+      - name: Set the requested kernel build timestamp
+        working-directory: kernel/common
+        run: |
+          set -euo pipefail
+          export KBUILD_BUILD_TIMESTAMP="$BUILD_TIMESTAMP"
+          export KBUILD_BUILD_VERSION=1
+
+          file=scripts/mkcompile_h
+          if [[ ! -f "$file" ]]; then
+            echo "::error::Missing $file"
+            exit 1
+          fi
+          perl -pi -e 's{UTS_VERSION="\$\(echo \$UTS_VERSION \$CONFIG_FLAGS \$TIMESTAMP \| cut -b -\$UTS_LEN\)"}{UTS_VERSION="#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025"}' "$file"
+          if ! grep -Fq 'UTS_VERSION="#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025"' "$file"; then
+            echo "::error::Could not set the requested UTS_VERSION in $file"
+            exit 1
+          fi
+          echo "KBUILD_BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
+
+      - name: Build Google GKI kernel
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+
+      - name: Verify and collect Image
+        run: |
+          set -euo pipefail
+          image="$GITHUB_WORKSPACE/kernel/out/android12-5.10/dist/Image"
+          if [[ ! -s "$image" ]]; then
+            echo "::error::Build did not produce $image"
+            exit 1
+          fi
+          strings "$image" | grep -F '#1 SMP PREEMPT Tue Oct 21 03:03:12 UTC 2025'
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp "$image" "$GITHUB_WORKSPACE/artifacts/Image-5.10.236-gki"
+
+      - name: Upload kernel Image
+        uses: actions/upload-artifact@v6
+        with:
+          name: android12-5.10.236-google-gki
+          path: artifacts/Image-5.10.236-gki
+          if-no-files-found: error
+          compression-level: 0
